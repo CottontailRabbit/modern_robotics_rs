@@ -37,6 +37,7 @@ dependencies = [
 name = "modern_robotics_rs"
 version = "0.1.0"
 dependencies = [
+ "approx",
  "nalgebra",
 ]
 

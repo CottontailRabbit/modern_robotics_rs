@@ -268,9 +268,6 @@ pub fn jacobian_body(
     let mut t = Matrix4::identity();
 
     for i in 0..n {
-        let se3_mat = vec_to_se3(&(-b_list[i] * theta_list[i]));
-        t = t * matrix_exp6(&se3_mat);
-
         let r = t.fixed_view::<3, 3>(0, 0).clone_owned();
         let p = t.fixed_view::<3, 1>(0, 3).clone_owned();
         let p_skew = vec_to_skew3(&p);
@@ -281,6 +278,10 @@ pub fn jacobian_body(
         adj_t.fixed_view_mut::<3, 3>(3, 0).copy_from(&(p_skew * r));
 
         jb.set_column(i, &(adj_t * b_list[i]));
+
+        // Update transform for next iteration (after setting current column)
+        let se3_mat = vec_to_se3(&(-b_list[i] * theta_list[i]));
+        t = t * matrix_exp6(&se3_mat);
     }
     jb
 }
@@ -304,9 +305,6 @@ pub fn jacobian_space(
     let mut t = Matrix4::identity();
 
     for i in 0..n {
-        let se3_mat = vec_to_se3(&(s_list[i] * theta_list[i]));
-        t = t * matrix_exp6(&se3_mat);
-
         let t_inv   = t.try_inverse().unwrap();
         let r_inv   = t_inv.fixed_view::<3, 3>(0, 0).clone_owned();
         let p_inv   = t_inv.fixed_view::<3, 1>(0, 3).clone_owned();
@@ -318,6 +316,10 @@ pub fn jacobian_space(
         adj_t_inv.fixed_view_mut::<3, 3>(3, 0).copy_from(&(p_skew * r_inv));
 
         js.set_column(i, &(adj_t_inv * s_list[i]));
+
+        // Update transform for next iteration (after setting current column)
+        let se3_mat = vec_to_se3(&(s_list[i] * theta_list[i]));
+        t = t * matrix_exp6(&se3_mat);
     }
     js
 }
@@ -548,4 +550,102 @@ pub fn ikin_space(
         }
     }
     (theta, false, max_iter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nalgebra::vector;
+
+    #[test]
+    fn test_jacobian_at_zero_config() {
+        // Simple 2-DOF test case
+        let b_list = [
+            vector![0.0, 0.0, 1.0, 0.0, 0.0, 0.0],  // Pure rotation around z
+            vector![0.0, 0.0, 1.0, 1.0, 0.0, 0.0],  // Rotation around z with translation
+        ];
+        let s_list = [
+            vector![0.0, 0.0, 1.0, 0.0, 0.0, 0.0],  // Pure rotation around z
+            vector![0.0, 0.0, 1.0, 1.0, 0.0, 0.0],  // Rotation around z with translation  
+        ];
+        let theta_list = [0.0, 0.0]; // Zero configuration
+        
+        let jb = jacobian_body(&b_list, &theta_list);
+        let js = jacobian_space(&s_list, &theta_list);
+        
+        println!("Body Jacobian at zero config:\n{:?}", jb);
+        println!("Space Jacobian at zero config:\n{:?}", js);
+        
+        // At zero configuration, jacobians should match the twist lists
+        // because all exponentials are identity matrices
+        for i in 0..b_list.len() {
+            let col = jb.column(i);
+            println!("Body jacobian column {}: [{}, {}, {}, {}, {}, {}]", 
+                     i, col[0], col[1], col[2], col[3], col[4], col[5]);
+            println!("Expected b_list[{}]: [{}, {}, {}, {}, {}, {}]", 
+                     i, b_list[i][0], b_list[i][1], b_list[i][2], b_list[i][3], b_list[i][4], b_list[i][5]);
+        }
+    }
+
+    #[test]
+    fn test_jacobian_with_translation() {
+        // Test case that demonstrates the fix more clearly
+        let b_list = [
+            vector![0.0, 0.0, 1.0, 0.0, 0.0, 0.0],  // Pure rotation around z
+            vector![0.0, 0.0, 1.0, 2.0, 0.0, 0.0],  // Rotation around z with translation in x
+        ];
+        let s_list = [
+            vector![0.0, 0.0, 1.0, 0.0, 0.0, 0.0],  // Pure rotation around z
+            vector![0.0, 0.0, 1.0, 2.0, 0.0, 0.0],  // Rotation around z with translation in x
+        ];
+        
+        let theta_list = [std::f64::consts::PI / 2.0, 0.0]; // 90 degrees for first joint
+        
+        let jb = jacobian_body(&b_list, &theta_list);
+        let js = jacobian_space(&s_list, &theta_list);
+        
+        println!("Body Jacobian with translation:");
+        for i in 0..2 {
+            let col = jb.column(i);
+            println!("  Column {}: [{:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.3}]", 
+                     i, col[0], col[1], col[2], col[3], col[4], col[5]);
+        }
+        
+        println!("Space Jacobian with translation:");
+        for i in 0..2 {
+            let col = js.column(i);
+            println!("  Column {}: [{:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.3}]", 
+                     i, col[0], col[1], col[2], col[3], col[4], col[5]);
+        }
+        
+        // Key assertions:
+        // 1. Column 0 should always be the original twist (identity transform)
+        let col0_body = jb.column(0);
+        assert!((col0_body[0] - 0.0).abs() < 1e-6);
+        assert!((col0_body[1] - 0.0).abs() < 1e-6);
+        assert!((col0_body[2] - 1.0).abs() < 1e-6);
+        assert!((col0_body[3] - 0.0).abs() < 1e-6);
+        assert!((col0_body[4] - 0.0).abs() < 1e-6);
+        assert!((col0_body[5] - 0.0).abs() < 1e-6);
+        
+        let col0_space = js.column(0);
+        assert!((col0_space[0] - 0.0).abs() < 1e-6);
+        assert!((col0_space[1] - 0.0).abs() < 1e-6);
+        assert!((col0_space[2] - 1.0).abs() < 1e-6);
+        assert!((col0_space[3] - 0.0).abs() < 1e-6);
+        assert!((col0_space[4] - 0.0).abs() < 1e-6);
+        assert!((col0_space[5] - 0.0).abs() < 1e-6);
+        
+        // 2. Column 1 should be affected by the transform from joint 0
+        // For body jacobian, after 90-degree rotation around z:
+        // [0,0,1,2,0,0] becomes [0,0,1,0,-2,0] due to coordinate transformation
+        let col1_body = jb.column(1);
+        println!("Expected body column 1 after transform: [0, 0, 1, 0, -2, 0]");
+        assert!((col1_body[0] - 0.0).abs() < 1e-6);
+        assert!((col1_body[1] - 0.0).abs() < 1e-6);
+        assert!((col1_body[2] - 1.0).abs() < 1e-6);
+        assert!((col1_body[3] - 0.0).abs() < 1e-6);
+        assert!((col1_body[4] - (-2.0)).abs() < 1e-6);
+        assert!((col1_body[5] - 0.0).abs() < 1e-6);
+    }
 }

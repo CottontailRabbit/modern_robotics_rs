@@ -8,3 +8,6 @@ edition = "2021"
 [dependencies]
 nalgebra = "0.32"
 approx = "0.5"
+
+[dev-dependencies]
+float-cmp = "0.9"
